@@ -1,0 +1,26 @@
+<!-- <!DOCTYPE html>
+<html>
+  <head>
+    <title>Knowledge Extractor</title>
+  </head>
+  <body>
+    <h1>Knowledge Extractor</h1>
+    <textarea id="input" rows="5" cols="40" placeholder="Enter text"></textarea
+    ><br />
+    <button onclick="analyze()">Analyze</button>
+    <pre id="output"></pre>
+
+    <script>
+      async function analyze() {
+        const text = document.getElementById("input").value;
+        const res = await fetch("/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        const data = await res.json();
+        document.getElementById("output").innerText = data.result;
+      }
+    </script>
+  </body>
+</html> -->
