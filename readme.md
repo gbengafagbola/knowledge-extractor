@@ -122,8 +122,6 @@ curl "http://localhost:8080/search?topic=quantum"
 ---
 
 ## Trade-offs
-
-* Timeboxing limited the implementation of a full test suite; only manual testing with curl is provided.
 * No authentication or user management was added.
 * The confidence score is a naive static heuristic.
 * API responses are simple JSON without pagination or advanced search.
