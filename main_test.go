@@ -19,7 +19,7 @@ func newMockServer(t *testing.T) (*server.Server, sqlmock.Sqlmock) {
 	}
 
 	// Use a mock wrapper instead of hitting OpenAI
-	return server.New(db, llm.NewMockClient()), mock
+	return server.New(db, llm.NewMockClient(), "postgres"), mock
 }
 
 func TestAnalyzeHandler(t *testing.T) {

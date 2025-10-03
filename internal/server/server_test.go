@@ -48,7 +48,7 @@ func TestAnalyzeHandler(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 
-	s := server.New(db, llm.NewMockClient())
+	s := server.New(db, llm.NewMockClient(), "sqlite3")
 
 	body := []byte(`{"text": "This is a test document about AI and Go"}`)
 	req := httptest.NewRequest(http.MethodPost, "/analyze", bytes.NewReader(body))
@@ -91,7 +91,7 @@ func TestSearchHandler(t *testing.T) {
 		t.Fatalf("failed to insert test row: %v", err)
 	}
 
-	s := server.New(db, llm.NewMockClient())
+	s := server.New(db, llm.NewMockClient(), "sqlite3")
 
 	req := httptest.NewRequest(http.MethodGet, "/search?topic=AI", nil)
 	w := httptest.NewRecorder()

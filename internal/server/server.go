@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gbengafagbola/knowledge-extractor/internal/llm"
 	"github.com/gbengafagbola/knowledge-extractor/internal/models"
@@ -12,12 +14,13 @@ import (
 )
 
 type Server struct {
-	DB  *sql.DB
-	LLM llm.LLM
+	DB     *sql.DB
+	LLM    llm.LLM
+	Driver string
 }
 
-func New(db *sql.DB, llm llm.LLM) *Server {
-	return &Server{DB: db, LLM: llm}
+func New(db *sql.DB, llm llm.LLM, driver string) *Server {
+	return &Server{DB: db, LLM: llm, Driver: driver}
 }
 
 // HANDLER
@@ -59,8 +62,8 @@ func (s *Server) AnalyzeHandler(w http.ResponseWriter, r *http.Request) {
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`
 	_, err = s.DB.ExecContext(context.Background(), query,
 		analysis.ID, analysis.RawText, analysis.Summary, analysis.Title,
-		pqStringArray(analysis.Topics), analysis.Sentiment,
-		pqStringArray(analysis.Keywords), analysis.Confidence,
+		s.formatStringArray(analysis.Topics), analysis.Sentiment,
+		s.formatStringArray(analysis.Keywords), analysis.Confidence,
 	)
 	if err != nil {
 		http.Error(w, "failed to insert into db: "+err.Error(), http.StatusInternalServerError)
@@ -78,12 +81,8 @@ func (s *Server) SearchHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.DB.QueryContext(context.Background(),
-		`SELECT id, raw_text, summary, title, topics, sentiment, keywords, confidence, created_at
-		 FROM analyses
-		 WHERE $1 = ANY(topics) OR $1 = ANY(keywords)`,
-		topic,
-	)
+	searchQuery := s.buildSearchQuery()
+	rows, err := s.DB.QueryContext(context.Background(), searchQuery, topic)
 	if err != nil {
 		http.Error(w, "db query failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -93,9 +92,19 @@ func (s *Server) SearchHandler(w http.ResponseWriter, r *http.Request) {
 	var results []models.Analysis
 	for rows.Next() {
 		var a models.Analysis
+		var topicsScanner, keywordsScanner interface{}
+
+		if s.Driver == "postgres" {
+			topicsScanner = &a.Topics
+			keywordsScanner = &a.Keywords
+		} else {
+			topicsScanner = &sqliteStringArray{&a.Topics}
+			keywordsScanner = &sqliteStringArray{&a.Keywords}
+		}
+
 		err := rows.Scan(
-			&a.ID, &a.RawText, &a.Summary, &a.Title, pqArray(&a.Topics),
-			&a.Sentiment, pqArray(&a.Keywords), &a.Confidence, &a.CreatedAt,
+			&a.ID, &a.RawText, &a.Summary, &a.Title, topicsScanner,
+			&a.Sentiment, keywordsScanner, &a.Confidence, &a.CreatedAt,
 		)
 		if err != nil {
 			http.Error(w, "row scan failed: "+err.Error(), http.StatusInternalServerError)
@@ -109,12 +118,63 @@ func (s *Server) SearchHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // helpers
-func pqArray(arr *[]string) interface{} {
-	return (*arr)
+func (s *Server) formatStringArray(arr []string) interface{} {
+	if s.Driver == "postgres" {
+		return "{" + joinStrings(arr, ",") + "}"
+	}
+	// SQLite - store as comma-separated string
+	return joinStrings(arr, ",")
 }
 
-func pqStringArray(arr []string) interface{} {
-	return "{" + joinStrings(arr, ",") + "}"
+// sqliteStringArray handles scanning comma-separated strings for SQLite
+type sqliteStringArray struct {
+	arr *[]string
+}
+
+func (s *sqliteStringArray) Scan(value interface{}) error {
+	if value == nil {
+		*s.arr = nil
+		return nil
+	}
+
+	var str string
+	switch v := value.(type) {
+	case string:
+		str = v
+	case []byte:
+		str = string(v)
+	default:
+		return fmt.Errorf("cannot scan %T into sqliteStringArray", value)
+	}
+
+	if str == "" {
+		*s.arr = []string{}
+		return nil
+	}
+
+	// Split comma-separated string and trim spaces
+	parts := strings.Split(str, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	*s.arr = result
+	return nil
+}
+
+func (s *Server) buildSearchQuery() string {
+	if s.Driver == "postgres" {
+		return `SELECT id, raw_text, summary, title, topics, sentiment, keywords, confidence, created_at
+		 FROM analyses
+		 WHERE $1 = ANY(topics) OR $1 = ANY(keywords)`
+	}
+	// SQLite - use LIKE with comma-separated strings
+	return `SELECT id, raw_text, summary, title, topics, sentiment, keywords, confidence, created_at
+		 FROM analyses
+		 WHERE topics LIKE '%' || $1 || '%' OR keywords LIKE '%' || $1 || '%'`
 }
 
 func joinStrings(arr []string, sep string) string {
