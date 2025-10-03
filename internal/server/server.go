@@ -11,12 +11,15 @@ import (
 	"github.com/gbengafagbola/knowledge-extractor/internal/llm"
 	"github.com/gbengafagbola/knowledge-extractor/internal/models"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
+// Server struct demonstrates dependency injection pattern
+// All dependencies are injected at construction time for better testability
 type Server struct {
-	DB     *sql.DB
-	LLM    llm.LLM
-	Driver string
+	DB     *sql.DB // Database connection - abstracted interface
+	LLM    llm.LLM // LLM client - interface allows for easy mocking
+	Driver string  // Database driver type for compatibility layer
 }
 
 func New(db *sql.DB, llm llm.LLM, driver string) *Server {
@@ -38,7 +41,9 @@ func (s *Server) AnalyzeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Call LLM (real or mock)
+	// BUSINESS LOGIC: Call LLM through interface (real or mock)
+	// This demonstrates the power of interface-based design:
+	// The handler doesn't know or care which LLM implementation is used
 	summary, title, topics, sentiment, keywords, confidence, err :=
 		s.LLM.AnalyzeText(input.Text)
 	if err != nil {
@@ -57,13 +62,16 @@ func (s *Server) AnalyzeHandler(w http.ResponseWriter, r *http.Request) {
 		Confidence: confidence,
 	}
 
+	// DATABASE OPERATION: Context-aware execution with proper error handling
+	// Uses parameterized queries to prevent SQL injection
+	// PostgreSQL arrays handled with pq.Array(), SQLite with comma-separated strings
 	query := `
 		INSERT INTO analyses (id, raw_text, summary, title, topics, sentiment, keywords, confidence)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`
 	_, err = s.DB.ExecContext(context.Background(), query,
 		analysis.ID, analysis.RawText, analysis.Summary, analysis.Title,
-		s.formatStringArray(analysis.Topics), analysis.Sentiment,
-		s.formatStringArray(analysis.Keywords), analysis.Confidence,
+		s.formatArrayForInsert(analysis.Topics), analysis.Sentiment,
+		s.formatArrayForInsert(analysis.Keywords), analysis.Confidence,
 	)
 	if err != nil {
 		http.Error(w, "failed to insert into db: "+err.Error(), http.StatusInternalServerError)
@@ -95,21 +103,38 @@ func (s *Server) SearchHandler(w http.ResponseWriter, r *http.Request) {
 		var topicsScanner, keywordsScanner interface{}
 
 		if s.Driver == "postgres" {
-			topicsScanner = &a.Topics
-			keywordsScanner = &a.Keywords
+			// PostgreSQL arrays need special handling with pq.StringArray
+			var topicsArray pq.StringArray
+			var keywordsArray pq.StringArray
+			topicsScanner = &topicsArray
+			keywordsScanner = &keywordsArray
+
+			err := rows.Scan(
+				&a.ID, &a.RawText, &a.Summary, &a.Title, topicsScanner,
+				&a.Sentiment, keywordsScanner, &a.Confidence, &a.CreatedAt,
+			)
+			if err != nil {
+				http.Error(w, "row scan failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			// Convert pq.StringArray back to []string
+			a.Topics = []string(topicsArray)
+			a.Keywords = []string(keywordsArray)
 		} else {
 			topicsScanner = &sqliteStringArray{&a.Topics}
 			keywordsScanner = &sqliteStringArray{&a.Keywords}
+
+			err := rows.Scan(
+				&a.ID, &a.RawText, &a.Summary, &a.Title, topicsScanner,
+				&a.Sentiment, keywordsScanner, &a.Confidence, &a.CreatedAt,
+			)
+			if err != nil {
+				http.Error(w, "row scan failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
-		err := rows.Scan(
-			&a.ID, &a.RawText, &a.Summary, &a.Title, topicsScanner,
-			&a.Sentiment, keywordsScanner, &a.Confidence, &a.CreatedAt,
-		)
-		if err != nil {
-			http.Error(w, "row scan failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
 		results = append(results, a)
 	}
 
@@ -118,9 +143,10 @@ func (s *Server) SearchHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // helpers
-func (s *Server) formatStringArray(arr []string) interface{} {
+func (s *Server) formatArrayForInsert(arr []string) interface{} {
 	if s.Driver == "postgres" {
-		return "{" + joinStrings(arr, ",") + "}"
+		// Use pq.Array for proper PostgreSQL array handling
+		return pq.Array(arr)
 	}
 	// SQLite - store as comma-separated string
 	return joinStrings(arr, ",")

@@ -18,9 +18,12 @@ import (
 
 func main() {
 	// Load environment variables from .env if present
+	// This allows for easy configuration management across environments
 	_ = godotenv.Load()
 
-	// DB connection (fallback to SQLite if DATABASE_URL is missing or connection fails)
+	// DATABASE STRATEGY: Graceful degradation pattern
+	// Try PostgreSQL (production) first, fallback to SQLite (development)
+	// This ensures the application works in both cloud and local environments
 	dsn := os.Getenv("DATABASE_URL")
 	driver := "postgres"
 	var db *sql.DB
@@ -64,13 +67,18 @@ func main() {
 		log.Fatal("failed to create table:", err)
 	}
 
-	// Decide which LLM client to use
+	// LLM STRATEGY: Interface-based dependency injection with resilience
+	// Demonstrates several design patterns:
+	// 1. Strategy Pattern: Different LLM implementations
+	// 2. Decorator Pattern: ResilientClient wraps OpenAI with fallback
+	// 3. Dependency Inversion: Server depends on interface, not concrete types
 	var llmClient llm.LLM
 	if os.Getenv("USE_MOCK_LLM") == "true" || os.Getenv("OPENAI_API_KEY") == "" {
 		llmClient = llm.NewMockClient()
 		fmt.Println("Using Mock LLM Client")
 	} else {
 		openaiClient := llm.NewOpenAIClient()
+		// ResilientClient implements circuit breaker pattern
 		llmClient = llm.NewResilientClient(openaiClient, llm.NewMockClient())
 		fmt.Println("Using OpenAI LLM Client (with automatic mock fallback)")
 	}
